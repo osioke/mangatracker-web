@@ -259,6 +259,23 @@ const FB_PROJECT = 'mangatracker-15917';
 const DAYS_FULL  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const DAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+// Mirrors Schedule.isReleaseOnDate() in the extension's src/schedule.js —
+// kept in sync so weekly AND monthly entries behave the same in both places.
+function lastDayOfMonth(date){ return new Date(date.getFullYear(), date.getMonth()+1, 0).getDate(); }
+function isReleaseOnDate(entry, date){
+  if(!entry || entry.status==='dropped') return false;
+  if(entry.releaseType==='monthly'){
+    if(!entry.releaseDayOfMonth) return false;
+    const target = Math.min(entry.releaseDayOfMonth, lastDayOfMonth(date));
+    return date.getDate()===target;
+  }
+  return !!(entry.releaseDays && entry.releaseDays.includes(date.getDay()));
+}
+function ordinal(n){
+  const s=['th','st','nd','rd'], v=n%100;
+  return n + (s[(v-20)%10] || s[v] || s[0]);
+}
+
 const TYPE_OPTS   = ['manhwa','manga','manhua','anime','webtoon'];
 const MODE_OPTS   = ['following','cooking'];
 const STATUS_OPTS = ['ongoing','completed','dropped','hiatus'];
@@ -448,7 +465,7 @@ function renderSchedule(){
   for(let i=-2;i<=6;i++){
     const d=new Date(today); d.setDate(today.getDate()+i);
     const dayIdx=d.getDay();
-    const releases=_entries.filter(e=>e.releaseDays&&e.releaseDays.includes(dayIdx)&&e.status!=='dropped');
+    const releases=_entries.filter(e=>isReleaseOnDate(e, d));
     if(!releases.length) continue;
     const isToday=i===0, isPast=i<0;
     const dateStr=`${DAYS_FULL[dayIdx]} ${d.getDate()} ${d.toLocaleString('default',{month:'short'})}`;
@@ -504,7 +521,9 @@ function openDetail(id){
   const artEl=src
     ? `<div class="modal-art"><img src="${esc(src)}" alt="" onerror="this.parentElement.innerHTML='${icons[e.type]||'📖'}'"></div>`
     : `<div class="modal-art">${icons[e.type]||'📖'}</div>`;
-  const relDays=e.releaseDays&&e.releaseDays.length?e.releaseDays.map(d=>DAYS_SHORT[d]).join(', '):'unknown';
+  const relDays = e.releaseType==='monthly'
+    ? (e.releaseDayOfMonth ? `Monthly · ${ordinal(e.releaseDayOfMonth)}` : 'unknown')
+    : (e.releaseDays && e.releaseDays.length ? e.releaseDays.map(d=>DAYS_SHORT[d]).join(', ') : 'unknown');
   const lastRead=e.lastRead?new Date(e.lastRead).toLocaleDateString():'never';
   let tempCh = e.chapter || 0;
 
@@ -626,8 +645,24 @@ function buildAddForm(entry=null){
       </div>
 
       <div class="field">
-        <label class="flabel">Release days</label>
-        <div class="pills-row">${dayChips}</div>
+        <label class="flabel">Release schedule</label>
+        <div class="pills-row" id="schedtype-pills">
+          <button class="pill schedtypepill${(e.releaseType||'weekly')==='weekly'?' on':''}" data-val="weekly">Weekly</button>
+          <button class="pill schedtypepill${e.releaseType==='monthly'?' on':''}" data-val="monthly">Monthly</button>
+        </div>
+        <div id="weekly-schedule" style="${e.releaseType==='monthly'?'display:none':''}">
+          <div class="pills-row" style="margin-top:8px">${dayChips}</div>
+        </div>
+        <div id="monthly-schedule" style="${e.releaseType==='monthly'?'':'display:none'};margin-top:8px">
+          <label class="flabel">Day of month</label>
+          <input class="finput" id="f-day-of-month" type="number" min="1" max="31" value="${e.releaseDayOfMonth||1}" style="max-width:90px">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="flabel">Alternate names</label>
+        <div id="altnames-list"></div>
+        <button class="mact" id="altnames-add-btn" style="width:100%;margin-top:4px">+ Add alternate name</button>
       </div>
 
       <div class="field" style="margin-bottom:0">
@@ -665,6 +700,37 @@ function buildAddForm(entry=null){
   wrap.querySelectorAll('.dchip').forEach(p=>p.addEventListener('click',()=>p.classList.toggle('on')));
   // Genre chips (multi)
   wrap.querySelectorAll('.gchip').forEach(p=>p.addEventListener('click',()=>p.classList.toggle('on')));
+  // Schedule type — weekly vs monthly (single select, toggles which sub-panel shows)
+  wrap.querySelectorAll('.schedtypepill').forEach(p=>{
+    p.addEventListener('click',()=>{
+      wrap.querySelectorAll('.schedtypepill').forEach(x=>x.classList.remove('on'));
+      p.classList.add('on');
+      const isMonthly = p.dataset.val==='monthly';
+      $('weekly-schedule').style.display  = isMonthly ? 'none' : '';
+      $('monthly-schedule').style.display = isMonthly ? '' : 'none';
+    });
+  });
+
+  // Alternate names — same purpose as in the extension: lets match detection
+  // (and just general "is this the same series") recognise a title that's
+  // listed differently on another site.
+  function buildAltNameRow(value=''){
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+    row.innerHTML = `
+      <input class="finput" type="text" placeholder="Alternate title…" value="${esc(value)}" style="flex:1;margin:0">
+      <button class="mact" style="flex:0;padding:0 10px" title="Remove">✕</button>
+    `;
+    row.querySelector('button').addEventListener('click', ()=>row.remove());
+    return row;
+  }
+  const altList = $('altnames-list');
+  (e.altNames||[]).forEach(n => altList.appendChild(buildAltNameRow(n)));
+  $('altnames-add-btn').addEventListener('click', ()=>{
+    const row = buildAltNameRow('');
+    altList.appendChild(row);
+    row.querySelector('input').focus();
+  });
 
   // Save
   $('f-save').addEventListener('click', async ()=>{
@@ -672,12 +738,17 @@ function buildAddForm(entry=null){
     if(!title){ toast('Enter a title'); return; }
     const mode   = wrap.querySelector('.modepill.on')?.dataset.val || 'following';
     const status = wrap.querySelector('.statpill.on')?.dataset.val || 'ongoing';
-    let releaseDays = [...wrap.querySelectorAll('.dchip.on')].map(p=>parseInt(p.dataset.day));
-    // If no day is selected, default to today so the entry still gets a
-    // schedule set. Skip this for monthly entries (edited via the extension)
-    // since this form has no day-of-week concept for them and releaseDays
-    // isn't meaningful there.
-    if (!releaseDays.length && e.releaseType !== 'monthly') releaseDays = [new Date().getDay()];
+    const releaseType = wrap.querySelector('.schedtypepill.on')?.dataset.val || 'weekly';
+    let releaseDays = [], releaseDayOfMonth = null;
+    if(releaseType==='monthly'){
+      releaseDayOfMonth = Math.min(Math.max(parseInt($('f-day-of-month').value||'1')||1, 1), 31);
+    } else {
+      releaseDays = [...wrap.querySelectorAll('.dchip.on')].map(p=>parseInt(p.dataset.day));
+      // If no day is selected, default to today so the entry still gets a
+      // schedule set.
+      if (!releaseDays.length) releaseDays = [new Date().getDay()];
+    }
+    const altNames = [...altList.querySelectorAll('input')].map(i=>i.value.trim()).filter(Boolean);
     const tropes      = [...wrap.querySelectorAll('.gchip.on')].map(p=>p.dataset.val);
     const newEntry = {
       ...(isEdit ? e : {}),
@@ -686,7 +757,7 @@ function buildAddForm(entry=null){
       type:    $('f-type').value,
       chapter: parseInt($('f-chapter').value)||0,
       notes:   $('f-notes').value.trim(),
-      mode, status, releaseDays, tropes,
+      mode, status, releaseType, releaseDays, releaseDayOfMonth, altNames, tropes,
       savedAt: Date.now(),
       lastRead: isEdit ? (e.lastRead||Date.now()) : Date.now(),
       // preserve existing fields that aren't in the web form
@@ -695,6 +766,7 @@ function buildAddForm(entry=null){
       image:     e.image||'',
       imageData: e.imageData||'',
       vibes:     e.vibes||[],
+      sources:   e.sources||[],
     };
     saveEntryLocally(newEntry);
     _editId = null;
