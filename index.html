@@ -672,7 +672,12 @@ function buildAddForm(entry=null){
     if(!title){ toast('Enter a title'); return; }
     const mode   = wrap.querySelector('.modepill.on')?.dataset.val || 'following';
     const status = wrap.querySelector('.statpill.on')?.dataset.val || 'ongoing';
-    const releaseDays = [...wrap.querySelectorAll('.dchip.on')].map(p=>parseInt(p.dataset.day));
+    let releaseDays = [...wrap.querySelectorAll('.dchip.on')].map(p=>parseInt(p.dataset.day));
+    // If no day is selected, default to today so the entry still gets a
+    // schedule set. Skip this for monthly entries (edited via the extension)
+    // since this form has no day-of-week concept for them and releaseDays
+    // isn't meaningful there.
+    if (!releaseDays.length && e.releaseType !== 'monthly') releaseDays = [new Date().getDay()];
     const tropes      = [...wrap.querySelectorAll('.gchip.on')].map(p=>p.dataset.val);
     const newEntry = {
       ...(isEdit ? e : {}),
